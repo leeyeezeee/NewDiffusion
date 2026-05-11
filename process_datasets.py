@@ -113,7 +113,7 @@ class NXGraphDataset:
         nx_graphs = []
         for file in graph_files:
             try:
-                pyg_graph = torch.load(file)
+                pyg_graph = torch.load(file, weights_only=False)
                 num_nodes = pyg_graph.num_nodes
                 nx_graph = nx.DiGraph()
                 nx_graph.add_nodes_from(range(num_nodes))
