@@ -56,7 +56,7 @@ API_KEY = "" # your api key
 ### Download Datasets
 Download MMLU, HumanEval and GSM8K ect. And put them in different folders.
 
-### Run on MMLU dataset
+### Run
 ```
 python run_mmlu.py
 
@@ -67,7 +67,7 @@ If you find RADAR useful for your research, please consider citing the following
 ```
 @inproceedings{zhang2026radar,
 title={{RADAR}: Redundancy-Aware Diffusion for Multi-Agent Communication Structure Generation},
-author={Anonymous},
+author={Zhang, Zhen and Zhou, Wanjing and Li, Juncheng and Fei, Hao and Wen, Jun and Ji, Wei},
 booktitle={Forty-third International Conference on Machine Learning},
 year={2026},
 url={https://openreview.net/forum?id=GtpiqFaJtZ}
