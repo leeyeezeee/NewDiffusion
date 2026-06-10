@@ -136,6 +136,14 @@ class NXGraphDataset:
                     edges = [(int(edge_index[0, j]), int(edge_index[1, j])) for j in range(edge_index.shape[1])]
                     nx_graph.add_edges_from(edges)
                     nx.set_edge_attributes(nx_graph, 1, "edge_attr")
+                    for semantic_attr in ("edge_semantic_gain", "semantic_gain", "edge_entropy_gain"):
+                        if hasattr(pyg_graph, semantic_attr):
+                            values = getattr(pyg_graph, semantic_attr)
+                            edge_values = {}
+                            for j, edge in enumerate(edges):
+                                if j < values.numel():
+                                    edge_values[edge] = float(values.reshape(-1)[j].item())
+                            nx.set_edge_attributes(nx_graph, edge_values, semantic_attr)
 
                 if not nx.is_directed_acyclic_graph(nx_graph):
                     try:
@@ -193,6 +201,17 @@ class PyGGraphDataset(InMemoryDataset):
                 group_node_attrs=['feat'],      # node feature -> x (N, 1)
                 group_edge_attrs=['edge_attr'], # edge feature -> edge_attr (E, 1)
             )
+
+            for semantic_attr in ("edge_semantic_gain", "semantic_gain", "edge_entropy_gain"):
+                edge_values = []
+                has_attr = True
+                for edge in g.edges():
+                    if semantic_attr not in g.edges[edge]:
+                        has_attr = False
+                        break
+                    edge_values.append(g.edges[edge][semantic_attr])
+                if has_attr and edge_values:
+                    setattr(data, semantic_attr, torch.as_tensor(edge_values, dtype=torch.float))
 
             data.num_nodes = g.number_of_nodes()
 
