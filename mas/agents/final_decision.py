@@ -102,9 +102,6 @@ class FinalRefer(Node):
         system_prompt, user_prompt = self._process_inputs(input, spatial_info, temporal_info)
         message = [{'role':'system','content':system_prompt},{'role':'user','content':user_prompt}]
         response = await self.llm.agen(message)
-        print(f"################system prompt:{system_prompt}")
-        print(f"################user prompt:{user_prompt}")
-        print(f"################response:{response}")
         return response
 
 @AgentRegistry.register('FinalDirect')
@@ -179,7 +176,6 @@ class FinalMajorVote(Node):
         max_output_num = 0
         for info in spatial_info.values():
             processed_output = self.prompt_set.postprocess_answer(info['output'])
-            print(processed_output)
             if processed_output in output_num:
                 output_num[processed_output] += 1
             else:

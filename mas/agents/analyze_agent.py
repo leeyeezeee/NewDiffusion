@@ -60,7 +60,4 @@ class AnalyzeAgent(Node):
         if self.wiki_summary != "":
             response += f"\n\n{self.wiki_summary}"
             self.wiki_summary = ""
-        print(f"################system prompt:{system_prompt}")
-        print(f"################user prompt:{user_prompt}")
-        print(f"################response:{response}")
         return response

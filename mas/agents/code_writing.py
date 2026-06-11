@@ -79,7 +79,4 @@ class CodeWriting(Node):
             return user_prompt
         message = [{'role':'system','content':system_prompt},{'role':'user','content':user_prompt}]
         response = await self.llm.agen(message)
-        print(f"################system prompt:{system_prompt}")
-        print(f"################user prompt:{user_prompt}")
-        print(f"################response:{response}")
         return response
