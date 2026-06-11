@@ -11,7 +11,12 @@ import asyncio
 import argparse
 import random
 
-from utils import get_kwargs, save_graph_with_features
+from utils import (
+    attach_edge_semantic_gains,
+    build_semantic_judge_from_args,
+    get_kwargs,
+    save_graph_with_features,
+)
 from accuracy import Accuracy
 from mas.prompt.mmlu_prompt_set import ROLE_DESCRIPTION
 
@@ -50,6 +55,11 @@ def parse_args():
     parser.add_argument('--num_epochs', type=int, default=30, help="Number of epochs for training")
     parser.add_argument('--num_trajectories', type=int, default=4, help="Number of trajectories for training")
     parser.add_argument('--limit_questions', type=int, default=153, help="Limit number of questions to evaluate")
+    parser.add_argument('--semantic_entropy_samples', type=int, default=0, help="Samples per edge side for collection-time semantic entropy; <=1 disables it")
+    parser.add_argument('--semantic_judge_llm_name', type=str, default=None, help="LLM used to judge semantic equivalence")
+    parser.add_argument('--semantic_judge_api_key', type=str, default="", help="API key for the semantic judge")
+    parser.add_argument('--semantic_judge_base_url', type=str, default="", help="Optional OpenAI-compatible base URL for the semantic judge")
+    parser.add_argument('--semantic_judge_max_concurrency', type=int, default=16, help="Max concurrent semantic judge requests")
 
     args = parser.parse_args()
 
@@ -157,11 +167,14 @@ async def evaluate(
     dirpath = mas_ROOT / "cache/MMLU/graphs"
 
     os.makedirs(dirpath, exist_ok=True)
+    semantic_judge = build_semantic_judge_from_args(args)
 
     for i_batch, record_batch in tqdm(enumerate(eval_loader(batch_size=eval_batch_size)), total=num_batches):
         tasks = []
         questions = []
         flow_graphs = []
+        input_dicts = []
+        test_graphs = []
 
         for record in record_batch:
             g_copy = copy.deepcopy(graph)
@@ -176,9 +189,27 @@ async def evaluate(
             tasks.append(asyncio.create_task(tg.arun(input_dict, num_rounds)))
             questions.append(input_dict['task'])
             flow_graphs.append(flow_graph)
+            input_dicts.append(input_dict)
+            test_graphs.append(tg)
 
         is_corrects = []
         raw_results = await asyncio.gather(*tasks)
+        if semantic_judge is not None:
+            semantic_tasks = [
+                attach_edge_semantic_gains(
+                    test_graphs[i],
+                    flow_graphs[i],
+                    input_dicts[i],
+                    questions[i],
+                    semantic_judge,
+                    args.semantic_entropy_samples,
+                )
+                for i in range(len(flow_graphs))
+            ]
+            semantic_results = await asyncio.gather(*semantic_tasks, return_exceptions=True)
+            for result in semantic_results:
+                if isinstance(result, Exception):
+                    print(f"Semantic entropy computation failed: {result}")
 
         for raw_answer, record in zip(raw_results, record_batch):
             answer = original_dataset.postprocess_answer(raw_answer)

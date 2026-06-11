@@ -6,6 +6,8 @@ import pickle
 import random
 import json
 import numpy as np
+import asyncio
+from typing import Any, Dict, List, Optional
 from torch_geometric.utils import to_dense_adj
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -95,6 +97,189 @@ def save_graph_with_features(flow_graph, filepath, metadata):
     for key, value in metadata.items():
         setattr(flow_graph, key, value)
     torch.save(flow_graph, filepath)
+
+
+def build_semantic_judge_from_args(args):
+    num_samples = getattr(args, "semantic_entropy_samples", 0)
+    if num_samples <= 1:
+        return None
+
+    from model.semantic_entropy import SemanticEntailmentJudge
+
+    judge = SemanticEntailmentJudge(
+        llm_name=getattr(args, "semantic_judge_llm_name", None),
+        api_key=getattr(args, "semantic_judge_api_key", ""),
+        base_url=getattr(args, "semantic_judge_base_url", ""),
+        max_concurrency=getattr(args, "semantic_judge_max_concurrency", None),
+    )
+    if not judge.is_configured:
+        print(
+            "Semantic entropy is enabled but SemanticEntailmentJudge is not configured; "
+            "set OPENAI_API_KEY or --semantic_judge_api_key. Skipping edge semantic gain."
+        )
+        return None
+    return judge
+
+
+def _latest_node_output(node):
+    outputs = getattr(node, "outputs", [])
+    if isinstance(outputs, list):
+        return outputs[-1] if outputs else None
+    return outputs
+
+
+def _node_info_from_output(node, output):
+    return {"role": getattr(node, "role", ""), "output": output}
+
+
+def _current_spatial_info(target_node) -> Dict[str, Dict[str, Any]]:
+    spatial_info = {}
+    for predecessor in getattr(target_node, "spatial_predecessors", []):
+        output = _latest_node_output(predecessor)
+        if output is not None:
+            spatial_info[predecessor.id] = _node_info_from_output(predecessor, output)
+    return spatial_info
+
+
+def _current_temporal_info(target_node) -> Dict[str, Dict[str, Any]]:
+    temporal_info = {}
+    for predecessor in getattr(target_node, "temporal_predecessors", []):
+        outputs = getattr(predecessor, "last_memory", {}).get("outputs", [])
+        output = outputs[-1] if isinstance(outputs, list) and outputs else outputs
+        if output is not None:
+            temporal_info[predecessor.id] = _node_info_from_output(predecessor, output)
+    return temporal_info
+
+
+def _flatten_outputs(results: List[Any]) -> List[Any]:
+    outputs = []
+    for result in results:
+        if isinstance(result, list):
+            outputs.extend(result)
+        else:
+            outputs.append(result)
+    return outputs
+
+
+async def _sample_node_outputs(
+    node,
+    input_data: Dict[str, Any],
+    spatial_info: Dict[str, Dict[str, Any]],
+    temporal_info: Dict[str, Dict[str, Any]],
+    num_samples: int,
+) -> List[Any]:
+    tasks = []
+    for _ in range(max(1, int(num_samples))):
+        tasks.append(
+            asyncio.create_task(
+                node._async_execute(
+                    input_data,
+                    dict(spatial_info),
+                    dict(temporal_info),
+                )
+            )
+        )
+    return _flatten_outputs(await asyncio.gather(*tasks, return_exceptions=False))
+
+
+async def attach_edge_semantic_gains(
+    test_graph,
+    flow_graph,
+    input_data: Dict[str, Any],
+    question: str,
+    judge,
+    num_entropy_samples: int,
+    negative_reward_scale: float = 1.0,
+    nonpositive_penalty: float = 0.01,
+):
+    """
+    Compute and attach edge-level semantic entropy gains during graph collection.
+
+    The returned tensor is aligned with flow_graph.edge_index: for edge src -> dst,
+    gain = entropy_without_edge - entropy_with_edge.
+    """
+    if judge is None or num_entropy_samples <= 1 or flow_graph.edge_index.numel() == 0:
+        return flow_graph
+
+    from model.semantic_entropy import semantic_uncertainty
+
+    node_list = list(test_graph.nodes.values())
+    gains = torch.zeros(flow_graph.edge_index.shape[1], dtype=torch.float)
+    details = []
+    after_cache = {}
+
+    for edge_pos, edge_index in enumerate(flow_graph.edge_index.T):
+        src_idx = int(edge_index[0].item())
+        dst_idx = int(edge_index[1].item())
+        if src_idx >= len(node_list) or dst_idx >= len(node_list):
+            continue
+
+        source_node = node_list[src_idx]
+        target_node = node_list[dst_idx]
+        spatial_info = _current_spatial_info(target_node)
+        temporal_info = _current_temporal_info(target_node)
+        if source_node.id not in spatial_info:
+            continue
+
+        without_edge_spatial_info = dict(spatial_info)
+        without_edge_spatial_info.pop(source_node.id, None)
+
+        try:
+            before_outputs = await _sample_node_outputs(
+                target_node,
+                input_data,
+                without_edge_spatial_info,
+                temporal_info,
+                num_entropy_samples,
+            )
+            after_key = target_node.id
+            if after_key not in after_cache:
+                after_outputs = await _sample_node_outputs(
+                    target_node,
+                    input_data,
+                    spatial_info,
+                    temporal_info,
+                    num_entropy_samples,
+                )
+                after_cache[after_key] = await semantic_uncertainty(
+                    question,
+                    after_outputs,
+                    judge,
+                )
+
+            before_entropy, before_labels = await semantic_uncertainty(
+                question,
+                before_outputs,
+                judge,
+            )
+            after_entropy, after_labels = after_cache[after_key]
+            entropy_delta = before_entropy - after_entropy
+            reward = (
+                entropy_delta
+                if entropy_delta > 0
+                else negative_reward_scale * entropy_delta - nonpositive_penalty
+            )
+            gains[edge_pos] = float(reward)
+            details.append(
+                {
+                    "edge_pos": edge_pos,
+                    "source": src_idx,
+                    "target": dst_idx,
+                    "before_entropy": before_entropy,
+                    "after_entropy": after_entropy,
+                    "entropy_delta": entropy_delta,
+                    "reward": reward,
+                    "before_labels": before_labels,
+                    "after_labels": after_labels,
+                }
+            )
+        except Exception as exc:
+            print(f"Failed to compute semantic entropy for edge {src_idx}->{dst_idx}: {exc}")
+
+    flow_graph.edge_semantic_gain = gains
+    flow_graph.edge_entropy_gain = gains.clone()
+    flow_graph.edge_semantic_details = details
+    return flow_graph
 
 
 def compute_effective_size_reward(x, edge_index, alpha=0.7):
