@@ -7,7 +7,7 @@ import random
 import json
 import numpy as np
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from torch_geometric.utils import to_dense_adj
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

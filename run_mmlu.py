@@ -60,6 +60,7 @@ def parse_args():
     parser.add_argument('--semantic_judge_api_key', type=str, default="", help="API key for the semantic judge")
     parser.add_argument('--semantic_judge_base_url', type=str, default="", help="Optional OpenAI-compatible base URL for the semantic judge")
     parser.add_argument('--semantic_judge_max_concurrency', type=int, default=16, help="Max concurrent semantic judge requests")
+    parser.add_argument('--collect_correct_semantic_graphs', action='store_true', help="Only collect correct graphs with edge semantic entropy gains, then exit")
 
     args = parser.parse_args()
 
@@ -167,7 +168,14 @@ async def evaluate(
     dirpath = mas_ROOT / "cache/MMLU/graphs"
 
     os.makedirs(dirpath, exist_ok=True)
+    if args is not None and args.collect_correct_semantic_graphs and args.semantic_entropy_samples <= 1:
+        args.semantic_entropy_samples = 3
     semantic_judge = build_semantic_judge_from_args(args)
+    if args is not None and args.collect_correct_semantic_graphs and semantic_judge is None:
+        raise ValueError(
+            "--collect_correct_semantic_graphs requires a configured semantic judge. "
+            "Set OPENAI_API_KEY or pass --semantic_judge_api_key."
+        )
 
     for i_batch, record_batch in tqdm(enumerate(eval_loader(batch_size=eval_batch_size)), total=num_batches):
         tasks = []
@@ -194,7 +202,19 @@ async def evaluate(
 
         is_corrects = []
         raw_results = await asyncio.gather(*tasks)
-        if semantic_judge is not None:
+
+        for raw_answer, record in zip(raw_results, record_batch):
+            answer = original_dataset.postprocess_answer(raw_answer)
+            correct_answer = original_dataset.record_to_target_answer(record)
+            is_correct = accuracy.update(answer, correct_answer)
+            accuracy.print()
+            is_corrects.append(is_correct)
+
+        save_indices = [
+            i for i in range(len(record_batch))
+            if not (args is not None and args.collect_correct_semantic_graphs and not is_corrects[i])
+        ]
+        if semantic_judge is not None and save_indices:
             semantic_tasks = [
                 attach_edge_semantic_gains(
                     test_graphs[i],
@@ -204,21 +224,15 @@ async def evaluate(
                     semantic_judge,
                     args.semantic_entropy_samples,
                 )
-                for i in range(len(flow_graphs))
+                for i in save_indices
             ]
             semantic_results = await asyncio.gather(*semantic_tasks, return_exceptions=True)
             for result in semantic_results:
                 if isinstance(result, Exception):
                     print(f"Semantic entropy computation failed: {result}")
 
-        for raw_answer, record in zip(raw_results, record_batch):
-            answer = original_dataset.postprocess_answer(raw_answer)
-            correct_answer = original_dataset.record_to_target_answer(record)
-            is_correct = accuracy.update(answer, correct_answer)
-            accuracy.print()
-            is_corrects.append(is_correct)
-
-        for i, record in enumerate(record_batch):
+        for i in save_indices:
+            record = record_batch[i]
             record_id = record.get('id', f"task_{i_batch * eval_batch_size + i}")
 
             name = "_".join(map(str, ['mmlu', record_id, current_mode, current_agent_num, is_corrects[i]]))
@@ -574,6 +588,11 @@ async def evaluate_graph_diffusion_model(gd_framework, args):
 
 async def main():
     args = parse_args()
+
+    if args.collect_correct_semantic_graphs:
+        await generate_initial_dataset(args)
+        print("Correct semantic graph collection finished.")
+        return
 
     # step 1: generate initial dataset
     graphs_dir = mas_ROOT / "cache/MMLU/graphs"
