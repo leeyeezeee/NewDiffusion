@@ -1,11 +1,47 @@
 from mas.utils.globals import Cost, PromptTokens, CompletionTokens
+from functools import lru_cache
 import tiktoken
 # GPT-4:  https://platform.openai.com/docs/models/gpt-4-and-gpt-4-turbo
 # GPT3.5: https://platform.openai.com/docs/models/gpt-3-5
 # DALL-E: https://openai.com/pricing
 
+QWEN3_8B_TOKENIZER_PATH = "/data/lyz/models/Qwen3-8B"
+
+
+def _normalise_model_name(model: str) -> str:
+    return (model or "").lower().replace("_", "-").replace(" ", "")
+
+
+def _is_qwen3_8b(model: str) -> bool:
+    return _normalise_model_name(model) in {"qwen3-8b", "qwen-3-8b"}
+
+
+@lru_cache(maxsize=1)
+def _qwen3_8b_tokenizer():
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(
+        QWEN3_8B_TOKENIZER_PATH,
+        trust_remote_code=True,
+        local_files_only=True,
+    )
+
+
+def _encoding_for_model(model: str):
+    try:
+        return tiktoken.encoding_for_model(model)
+    except KeyError:
+        return tiktoken.get_encoding("cl100k_base")
+
+
 def cal_token(model:str, text:str):
-    encoder = tiktoken.encoding_for_model(model)
+    if _is_qwen3_8b(model):
+        try:
+            tokenizer = _qwen3_8b_tokenizer()
+            return len(tokenizer.encode(text))
+        except Exception:
+            pass
+
+    encoder = _encoding_for_model(model)
     num_tokens = len(encoder.encode(text))
     return num_tokens
 
