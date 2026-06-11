@@ -19,8 +19,34 @@ MINE_BASE_URL = os.getenv('BASE_URL')
 MINE_API_KEYS = os.getenv('API_KEY')
 
 
+def _env_bool(name: str) -> Optional[bool]:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _qwen_extra_body(model_name: str) -> Dict[str, Any]:
+    if "qwen" not in model_name.lower():
+        return {}
+    enable_thinking = _env_bool("QWEN_ENABLE_THINKING")
+    if enable_thinking is None:
+        return {}
+    return {
+        "enable_thinking": enable_thinking,
+        "chat_template_kwargs": {
+            "enable_thinking": enable_thinking,
+        },
+    }
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_random_exponential(multiplier=1, max=60))
-async def achat(model_name:str, messages:list):
+async def achat(
+    model_name: str,
+    messages: list,
+    max_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+):
     request_url = MINE_BASE_URL
     authorization_key = MINE_API_KEYS
     headers = {
@@ -43,6 +69,11 @@ async def achat(model_name:str, messages:list):
         "messages": norm_messages,
         "stream": False,
     }
+    if max_tokens is not None:
+        data["max_tokens"] = max_tokens
+    if temperature is not None:
+        data["temperature"] = temperature
+    data.update(_qwen_extra_body(model_name))
     
     async with aiohttp.ClientSession() as session:
         async with session.post(request_url, headers=headers ,json=data) as response:
@@ -78,7 +109,12 @@ class GPTChat(LLM):
         
         if isinstance(messages, str):
             messages = [Message(role="user", content=messages)]
-        return await achat(self.model_name,messages)
+        return await achat(
+            self.model_name,
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
     
     def gen(
         self,

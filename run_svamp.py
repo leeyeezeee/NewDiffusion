@@ -59,6 +59,7 @@ def parse_args():
     parser.add_argument('--semantic_judge_api_key', type=str, default="", help="API key for the semantic judge")
     parser.add_argument('--semantic_judge_base_url', type=str, default="", help="Optional OpenAI-compatible base URL for the semantic judge")
     parser.add_argument('--semantic_judge_max_concurrency', type=int, default=16, help="Max concurrent semantic judge requests")
+    parser.add_argument('--collect_correct_semantic_graphs', action='store_true', help="Only collect correct graphs with edge semantic entropy gains, then exit")
 
     args = parser.parse_args()
 
@@ -149,7 +150,14 @@ async def evaluate(
     dirpath = mas_ROOT / "cache/SVAMP/graphs"
 
     os.makedirs(dirpath, exist_ok=True)
+    if args is not None and args.collect_correct_semantic_graphs and args.semantic_entropy_samples <= 1:
+        args.semantic_entropy_samples = 3
     semantic_judge = build_semantic_judge_from_args(args)
+    if args is not None and args.collect_correct_semantic_graphs and semantic_judge is None:
+        raise ValueError(
+            "--collect_correct_semantic_graphs requires a configured semantic judge. "
+            "Set OPENAI_API_KEY or pass --semantic_judge_api_key."
+        )
 
     total_solved = 0
 
@@ -183,22 +191,8 @@ async def evaluate(
         
         coroutines_to_run = [task for task, meta in tasks]
         results = await asyncio.gather(*coroutines_to_run, return_exceptions=True)
-        if semantic_judge is not None:
-            semantic_tasks = [
-                attach_edge_semantic_gains(
-                    meta["test_graph"],
-                    meta["flow_graph"],
-                    meta["input_dict"],
-                    meta["question"],
-                    semantic_judge,
-                    args.semantic_entropy_samples,
-                )
-                for _, meta in tasks
-            ]
-            semantic_results = await asyncio.gather(*semantic_tasks, return_exceptions=True)
-            for result in semantic_results:
-                if isinstance(result, Exception):
-                    print(f"Semantic entropy computation failed: {result}")
+
+        save_items = []
 
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -220,6 +214,30 @@ async def evaluate(
                 print(f"Could not compare answers: predicted='{predict_answer}', true='{true_answer}'")
 
             total_solved += 1
+            if args is not None and args.collect_correct_semantic_graphs and not is_solved:
+                continue
+            save_items.append((i, is_solved))
+
+        if semantic_judge is not None and save_items:
+            semantic_tasks = [
+                attach_edge_semantic_gains(
+                    tasks[i][1]["test_graph"],
+                    tasks[i][1]["flow_graph"],
+                    tasks[i][1]["input_dict"],
+                    tasks[i][1]["question"],
+                    semantic_judge,
+                    args.semantic_entropy_samples,
+                )
+                for i, _ in save_items
+            ]
+            semantic_results = await asyncio.gather(*semantic_tasks, return_exceptions=True)
+            for result in semantic_results:
+                if isinstance(result, Exception):
+                    print(f"Semantic entropy computation failed: {result}")
+
+        for i, is_solved in save_items:
+            metadata = tasks[i][1]
+            record = metadata['record']
             name = "_".join(map(str, ['svamp', metadata['record_idx'], current_mode, current_agent_num, is_solved]))
             filepath = dirpath / f'{name}.pt'
             save_graph_with_features(
@@ -595,6 +613,11 @@ async def main():
     args = parse_args()
 
     test_dataset = None
+
+    if args.collect_correct_semantic_graphs:
+        await generate_initial_dataset(args)
+        print("Correct semantic graph collection finished.")
+        return
 
     # step 1: generate initial dataset
     graphs_dir = mas_ROOT / "cache/SVAMP/graphs"
