@@ -368,16 +368,13 @@ async def evaluate_semantic_edge_diffusion(args, spec, gd_framework, pyg_graph_d
                 "error": error,
             })
 
-        running_accuracy = total_correct / max(len(item_results), 1) * 100
-        print(
-            f"Accuracy={running_accuracy:.2f}% | "
-            f"Cost=${Cost.instance().value:.4f} | "
-            f"Tokens=P({int(PromptTokens.instance().value)}), C({int(CompletionTokens.instance().value)})"
-        )
-
     total_tasks = len(item_results)
     accuracy = total_correct / total_tasks if total_tasks else 0.0
-    print(f"Final accuracy: {accuracy * 100:.2f}% ({total_correct}/{total_tasks})")
+    print(
+        f"Final accuracy: {accuracy * 100:.2f}% ({total_correct}/{total_tasks}) | "
+        f"Cost=${Cost.instance().value:.4f} | "
+        f"Tokens=P({int(PromptTokens.instance().value)}), C({int(CompletionTokens.instance().value)})"
+    )
     result = {
         "dataset": args.dataset,
         "split": spec.split,

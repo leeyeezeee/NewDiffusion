@@ -69,8 +69,6 @@ def cost_count(prompt, response, model_name):
     else:
         branch = "other"
         price = 0.0
-        prompt_len = 0
-        completion_len = 0
 
     Cost.instance().value += price
     PromptTokens.instance().value += prompt_len

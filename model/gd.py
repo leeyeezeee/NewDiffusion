@@ -126,21 +126,31 @@ class GDFramework(nn.Module):
         diffusion_trajectories = []
         for m in range(M):
             node_order, sigma_t_dist = self.node_decay_ordering(graph)
-            node_order_invariate = node_order
+            original_node_order = list(node_order)
+            current_node_order = []
 
             # create diffusion trajectory
             diffusion_trajectory = [original_data]
+            reference_trajectory = []
             masked_data = graph.clone()
             for i in range(len(node_order)):
                 node = node_order[i]
                 masked_data = masked_data.clone().to(self.device)
+                reference_trajectory.append(masked_data.clone())
+                current_node_order.append(node)
                 masked_data = self.masker.mask_node(masked_data, node)
                 diffusion_trajectory.append(masked_data)
                 if i < len(node_order) - 1:
                     masked_data = self.masker.remove_node(masked_data, node)
                     node_order = [n - 1 if n > node else n for n in node_order]  # update node order to account for removed node
 
-            diffusion_trajectories.append([diffusion_trajectory, node_order_invariate, sigma_t_dist])
+            diffusion_trajectories.append([
+                diffusion_trajectory,
+                current_node_order,
+                sigma_t_dist,
+                reference_trajectory,
+                original_node_order,
+            ])
         return diffusion_trajectories
 
     def preprocess(self, graph):
@@ -177,6 +187,7 @@ class GDFramework(nn.Module):
         - compose edge_type_probs with sigma_t_dist to get probability of choosing edge type for each edge
         '''
         edge_probs = edge_type_probs.view(-1, edge_type_probs.shape[-1])
+        correct_edge_type = correct_edge_type.to(self.device).long().view(-1)
         edge_probs = torch.gather(edge_probs, 1, correct_edge_type.view(-1, 1))
         nll_edge = -torch.log(edge_probs + 1e-8).mean()
 
@@ -333,7 +344,12 @@ class GDFramework(nn.Module):
 
         return torch.stack(losses).mean()
 
-    def compute_denoising_loss(self, diffusion_trajectory, node_order_invariate, sigma_t_dist_list):
+    def compute_denoising_loss(
+            self,
+            diffusion_trajectory,
+            node_order_invariate,
+            sigma_t_dist_list,
+            reference_trajectory=None):
         '''
         Computes the loss for the denoising network based on negative log-likelihood (NLL).
         '''
@@ -344,6 +360,7 @@ class GDFramework(nn.Module):
 
         for t in range(0, T):
             graph_t_next = diffusion_trajectory[t + 1] # G_{t+1}
+            reference_graph = reference_trajectory[t] if reference_trajectory is not None else G_0
             selected_node = node_order_invariate[t]
             semantic_gain = self.semantic_gain_to_node(graph_t_next, selected_node)
             denoising_output = self.denoising_network(
@@ -360,13 +377,13 @@ class GDFramework(nn.Module):
                 # Compute NLL for node type. Edge-only denoisers skip this branch.
                 sigma_t_dist = sigma_t[t]
                 sigma_t_dist = sigma_t_dist[sigma_t_dist != 0]
-                original_node_type = G_0.x[selected_node]
+                original_node_type = reference_graph.x[selected_node]
                 nll_node = self.compute_nll_node(node_type_probs, original_node_type, sigma_t_dist)
             else:
                 edge_type_probs = denoising_output
                 nll_node = torch.tensor(0.0, device=self.device)
 
-            original_edge_types = self.edge_types_to_node(G_0, selected_node)
+            original_edge_types = self.edge_types_to_node(reference_graph, selected_node)
             nll_edge = self.compute_nll_edge(edge_type_probs, original_edge_types)
 
             loss += nll_node + nll_edge
@@ -380,16 +397,24 @@ class GDFramework(nn.Module):
         Computes the loss for the diffusion ordering network using the REINFORCE algorithm.
         '''
         ordering_loss = 0
-        for trajectory, node_order, sigma_t_dist_list in diffusion_trajectories:
+        for trajectory_item in diffusion_trajectories:
+            trajectory, node_order, sigma_t_dist_list = trajectory_item[:3]
+            reference_trajectory = trajectory_item[3] if len(trajectory_item) > 3 else None
+            log_prob_node_order = trajectory_item[4] if len(trajectory_item) > 4 else node_order
             # Compute the reward as the negative denoising loss
             with torch.no_grad():
-                reward = -self.compute_denoising_loss(trajectory, node_order, sigma_t_dist_list)
+                reward = -self.compute_denoising_loss(
+                    trajectory,
+                    node_order,
+                    sigma_t_dist_list,
+                    reference_trajectory=reference_trajectory,
+                )
                 print(f"Reward: {reward.item()}")
             # REINFORCE update (policy gradient)
             # Calculate probability of trajectory using sigma_t_dist_list
             log_prob = torch.tensor(0.0, device=self.device)
             for t in range(len(sigma_t_dist_list)):
-                log_prob += torch.log(sigma_t_dist_list[t][node_order[t]])
+                log_prob += torch.log(sigma_t_dist_list[t][log_prob_node_order[t]])
             print(f"Log prob of sigma_t: {log_prob.item()}")
             ordering_loss += reward * log_prob
 
@@ -408,7 +433,15 @@ class GDFramework(nn.Module):
             diffusion_trajectories = self.generate_diffusion_trajectories(graph, M)
             
             # Compute denoising loss
-            denoising_loss = sum([self.compute_denoising_loss(traj[0], traj[1], traj[2]) for traj in diffusion_trajectories])
+            denoising_loss = sum([
+                self.compute_denoising_loss(
+                    traj[0],
+                    traj[1],
+                    traj[2],
+                    reference_trajectory=traj[3] if len(traj) > 3 else None,
+                )
+                for traj in diffusion_trajectories
+            ])
             batch_denoising_loss += denoising_loss
         
         for graph in ordering_batch:

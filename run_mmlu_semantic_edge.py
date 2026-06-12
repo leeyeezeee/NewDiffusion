@@ -360,13 +360,11 @@ async def evaluate_semantic_edge_diffusion(args, gd_framework, pyg_graph_dataset
                 "is_correct": is_correct,
             })
 
-        print(
-            f"Accuracy={accuracy.get() * 100:.2f}% | "
-            f"Cost=${Cost.instance().value:.4f} | "
-            f"Tokens=P({int(PromptTokens.instance().value)}), C({int(CompletionTokens.instance().value)})"
-        )
-
-    print(f"Final accuracy: {accuracy.get() * 100:.2f}%")
+    print(
+        f"Final accuracy: {accuracy.get() * 100:.2f}% ({total_correct}/{len(item_results)}) | "
+        f"Cost=${Cost.instance().value:.4f} | "
+        f"Tokens=P({int(PromptTokens.instance().value)}), C({int(CompletionTokens.instance().value)})"
+    )
     result = {
         "dataset": args.dataset,
         "split": "val",
