@@ -76,7 +76,7 @@ def get_initial_dataset_configs():
     Return initial dataset configurations.
     """
     configs = set()
-    for agent_num in range(3, 5):
+    for agent_num in (5,):
         configs.add(('FullConnected', agent_num))
         configs.add(('Mesh', agent_num))
         configs.add(('Star', agent_num))
