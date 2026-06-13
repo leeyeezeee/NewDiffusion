@@ -59,6 +59,8 @@ def parse_args():
     parser.add_argument("--graph_dir", type=str, default=str(mas_ROOT / "cache/MMLU/graphs"))
     parser.add_argument("--role_dir", type=str, default=str(mas_ROOT / "cache/MMLU/roles"))
     parser.add_argument("--model_dir", type=str, default=str(mas_ROOT / "cache/MMLU/semantic_edge_models"))
+    parser.add_argument("--eval_only", action="store_true")
+    parser.add_argument("--result_file", type=str, default="mmlu_semantic_edge_accuracy.txt")
     parser.add_argument("--bootstrap_graphs", action="store_true")
     parser.add_argument("--bootstrap_train_size", type=int, default=64)
     parser.add_argument("--bootstrap_agent_min", type=int, default=3)
@@ -115,6 +117,11 @@ def role_ids_for_generation(graph, agent_nums, device):
         return node_types[:agent_nums]
     pad = torch.zeros(agent_nums - node_types.numel(), dtype=torch.long, device=device)
     return torch.cat([node_types, pad], dim=0)
+
+
+def resolve_path(path_value):
+    path = Path(path_value)
+    return path if path.is_absolute() else mas_ROOT / path
 
 
 def compute_sparsity_reward(graph):
@@ -454,11 +461,8 @@ def build_framework(args, pyg_graph_dataset, num_role_types):
 
 
 def load_cached_graph_dataset(args):
-    graph_dir = mas_ROOT / args.graph_dir if not os.path.isabs(args.graph_dir) else args.graph_dir
-    role_dir = mas_ROOT / args.role_dir if not os.path.isabs(args.role_dir) else args.role_dir
-
-    graph_dir = Path(graph_dir)
-    role_dir = Path(role_dir)
+    graph_dir = resolve_path(args.graph_dir)
+    role_dir = resolve_path(args.role_dir)
     if not graph_dir.exists() or not any(graph_dir.glob("*.pt")):
         if args.bootstrap_graphs:
             bootstrap_candidate_graphs(args, graph_dir)
@@ -476,9 +480,28 @@ def load_cached_graph_dataset(args):
 
 
 def save_semantic_edge_models(gd_framework, model_dir):
+    model_dir = resolve_path(model_dir)
     os.makedirs(model_dir, exist_ok=True)
-    torch.save(gd_framework.topology_order_network.state_dict(), os.path.join(model_dir, "topology_order_network.pt"))
-    torch.save(gd_framework.denoising_network.state_dict(), os.path.join(model_dir, "semantic_edge_denoising_network.pt"))
+    torch.save(gd_framework.topology_order_network.state_dict(), model_dir / "topology_order_network.pt")
+    torch.save(gd_framework.denoising_network.state_dict(), model_dir / "semantic_edge_denoising_network.pt")
+
+
+def load_semantic_edge_models(gd_framework, model_dir):
+    model_dir = resolve_path(model_dir)
+    order_path = model_dir / "topology_order_network.pt"
+    edge_path = model_dir / "semantic_edge_denoising_network.pt"
+    if not order_path.exists() or not edge_path.exists():
+        raise FileNotFoundError(
+            f"Missing semantic-edge checkpoint files in {model_dir}. "
+            "Expected topology_order_network.pt and semantic_edge_denoising_network.pt."
+        )
+    gd_framework.topology_order_network.load_state_dict(
+        torch.load(order_path, map_location=gd_framework.device)
+    )
+    gd_framework.denoising_network.load_state_dict(
+        torch.load(edge_path, map_location=gd_framework.device)
+    )
+    print(f"Loaded semantic-edge models from {model_dir}")
 
 
 async def train_semantic_edge_diffusion(args, gd_framework, pyg_graph_dataset, id_to_role):
@@ -664,8 +687,9 @@ async def train_semantic_edge_diffusion(args, gd_framework, pyg_graph_dataset, i
     print(f"Saved models to {args.model_dir}")
 
 
-def save_evaluation_result(summary_text):
-    result_path = Path("mmlu_semantic_edge_accuracy.txt")
+def save_evaluation_result(args, summary_text):
+    result_path = resolve_path(args.result_file)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     with open(result_path, "a+", encoding="utf-8") as f:
         f.write(summary_text + "\n")
     return result_path
@@ -758,7 +782,7 @@ async def evaluate_semantic_edge_diffusion(args, gd_framework, pyg_graph_dataset
     print("\n" + "=" * 50 + "\nEvaluation Summary")
     print(summary_text)
     print("-" * 50)
-    result_path = save_evaluation_result(summary_text)
+    result_path = save_evaluation_result(args, summary_text)
     print(f"Saved evaluation summary to {result_path}")
 
 
@@ -769,7 +793,10 @@ async def main():
     nx_dataset, pyg_graph_dataset = load_cached_graph_dataset(args)
     gd_framework = build_framework(args, pyg_graph_dataset, num_role_types=len(nx_dataset.role_to_id))
 
-    await train_semantic_edge_diffusion(args, gd_framework, pyg_graph_dataset, nx_dataset.id_to_role)
+    if args.eval_only:
+        load_semantic_edge_models(gd_framework, args.model_dir)
+    else:
+        await train_semantic_edge_diffusion(args, gd_framework, pyg_graph_dataset, nx_dataset.id_to_role)
     await evaluate_semantic_edge_diffusion(args, gd_framework, pyg_graph_dataset, nx_dataset.id_to_role)
 
 
