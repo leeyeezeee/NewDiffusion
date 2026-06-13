@@ -188,11 +188,10 @@ async def average_agent_semantic_entropy(test_graph, input_dict, question, judge
     if judge is None or num_samples <= 1:
         return None, []
 
-    entropy_items = []
-    for node in test_graph.nodes.values():
+    async def node_entropy_item(node):
         history = getattr(node, "execution_history", [])
         if not history:
-            continue
+            return None
         history_item = history[-1]
         outputs = await _sample_node_outputs(
             node,
@@ -202,14 +201,24 @@ async def average_agent_semantic_entropy(test_graph, input_dict, question, judge
             num_samples,
         )
         if not outputs:
-            continue
+            return None
         entropy, labels = await semantic_uncertainty(question, outputs, judge)
-        entropy_items.append({
+        return {
             "node_id": node.id,
             "role": node.role,
             "entropy": float(entropy),
             "labels": labels,
-        })
+        }
+
+    entropy_results = await asyncio.gather(
+        *[node_entropy_item(node) for node in test_graph.nodes.values()],
+        return_exceptions=True,
+    )
+    entropy_items = [
+        item
+        for item in entropy_results
+        if isinstance(item, dict)
+    ]
 
     if not entropy_items:
         return 0.0, []
@@ -288,8 +297,20 @@ async def evaluate_generated_graphs_for_rl(
         return []
 
     raw_answers = await asyncio.gather(*evaluation_tasks, return_exceptions=True)
+    entropy_tasks = [
+        average_agent_semantic_entropy(
+            graph_data["test_graph"],
+            graph_data["input_dict"],
+            graph_data["input_dict"]["task"],
+            semantic_judge,
+            args.semantic_entropy_samples,
+        )
+        for graph_data in graph_data_list
+    ]
+    entropy_results = await asyncio.gather(*entropy_tasks, return_exceptions=True)
+
     results = []
-    for raw_answer, graph_data in zip(raw_answers, graph_data_list):
+    for raw_answer, graph_data, entropy_result in zip(raw_answers, graph_data_list, entropy_results):
         record = graph_data["record"]
         correct_answer = MMLUDataset.record_to_target_answer(record)
         if isinstance(raw_answer, BaseException):
@@ -299,13 +320,10 @@ async def evaluate_generated_graphs_for_rl(
             postprocessed_answer = MMLUDataset.postprocess_answer(raw_answer)
             is_correct = postprocessed_answer == correct_answer
 
-        avg_entropy, entropy_details = await average_agent_semantic_entropy(
-            graph_data["test_graph"],
-            graph_data["input_dict"],
-            graph_data["input_dict"]["task"],
-            semantic_judge,
-            args.semantic_entropy_samples,
-        )
+        if isinstance(entropy_result, BaseException):
+            avg_entropy, entropy_details = 0.0, []
+        else:
+            avg_entropy, entropy_details = entropy_result
 
         generated_sparsity = compute_sparsity_reward(graph_data["generated_graph"])
         generated_reward, entropy_reward = weighted_reward(
