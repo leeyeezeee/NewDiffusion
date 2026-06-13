@@ -1,11 +1,12 @@
 from mas.utils.globals import Cost, PromptTokens, CompletionTokens
 from functools import lru_cache
+import os
 import tiktoken
 # GPT-4:  https://platform.openai.com/docs/models/gpt-4-and-gpt-4-turbo
 # GPT3.5: https://platform.openai.com/docs/models/gpt-3-5
 # DALL-E: https://openai.com/pricing
 
-QWEN3_8B_TOKENIZER_PATH = "/data/lyz/models/Qwen3-8B"
+QWEN3_8B_TOKENIZER_PATH = os.getenv("QWEN3_8B_TOKENIZER_PATH", "/data/lyz/models/Qwen3-8B")
 
 
 def _normalise_model_name(model: str) -> str:
@@ -13,7 +14,8 @@ def _normalise_model_name(model: str) -> str:
 
 
 def _is_qwen3_8b(model: str) -> bool:
-    return _normalise_model_name(model) in {"qwen3-8b", "qwen-3-8b"}
+    normalised = _normalise_model_name(model).replace("/", "-")
+    return normalised in {"qwen3-8b", "qwen-3-8b"} or ("qwen3" in normalised and "8b" in normalised)
 
 
 @lru_cache(maxsize=1)

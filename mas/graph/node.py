@@ -62,6 +62,7 @@ class Node(ABC):
         self.raw_inputs: List[Any] = []
         self.role = ""
         self.last_memory: Dict[str,List[Any]] = {'inputs':[],'outputs':[],'raw_inputs':[]}        
+        self.execution_history: List[Dict[str, Any]] = []
 
     @property
     def node_name(self):
@@ -165,6 +166,11 @@ class Node(ABC):
             if not isinstance(result, list):
                 result = [result]
             self.outputs.extend(result)
+        self.execution_history.append({
+            "spatial_info": {node_id: dict(info) for node_id, info in spatial_info.items()},
+            "temporal_info": {node_id: dict(info) for node_id, info in temporal_info.items()},
+            "outputs": list(self.outputs),
+        })
         return self.outputs
                
     @abstractmethod

@@ -292,7 +292,13 @@ class GDFramework(nn.Module):
             schedule.extend(node_edges)
         return schedule
 
-    def compute_edge_denoising_loss(self, graph, node_order=None, semantic_gain_matrix=None, mask_low_gain_first=True):
+    def compute_edge_denoising_loss(
+            self,
+            graph,
+            node_order=None,
+            semantic_gain_matrix=None,
+            mask_low_gain_first=True,
+            prune_low_gain_threshold=None):
         '''
         Edge-only diffusion loss. Nodes/agent roles remain visible; only legal
         directed edges under node_order are progressively masked. The denoiser
@@ -340,6 +346,16 @@ class GDFramework(nn.Module):
                 edge_type_probs = edge_type_probs[1]
 
             correct_edge_type = self.edge_type_for_pair(original_graph, src, dst)
+            has_semantic_gain = semantic_gain_matrix is not None or self._semantic_gain_attr(original_graph) is not None
+            if (
+                    prune_low_gain_threshold is not None
+                    and has_semantic_gain
+                    and item["semantic_gain"] <= prune_low_gain_threshold):
+                correct_edge_type = torch.tensor(
+                    int(self.masker.EMPTY_EDGE),
+                    dtype=torch.long,
+                    device=self.device,
+                )
             losses.append(-torch.log(edge_type_probs[src, correct_edge_type] + 1e-8))
 
         return torch.stack(losses).mean()
@@ -461,7 +477,7 @@ class GDFramework(nn.Module):
         '''
         return self.compute_topology_order_loss(ordering_batch, target_orders=target_orders)
 
-    def train_edge_step(self, denoising_batch, node_orders=None, semantic_gain_matrices=None):
+    def train_edge_step(self, denoising_batch, node_orders=None, semantic_gain_matrices=None, prune_low_gain_threshold=None):
         '''
         Computes only the edge denoising loss. The caller should backpropagate
         this loss with an optimizer over denoising_network.
@@ -479,6 +495,7 @@ class GDFramework(nn.Module):
                 graph,
                 node_order=node_order,
                 semantic_gain_matrix=semantic_gain_matrix,
+                prune_low_gain_threshold=prune_low_gain_threshold,
             ))
         return torch.stack(losses).mean()
     
@@ -702,6 +719,10 @@ class GDFramework(nn.Module):
                     return_log_probs=True,
                     semantic_gain=semantic_gain,
                 )
+                valid_edge_mask = torch.zeros(num_nodes, dtype=torch.bool, device=self.device)
+                for src_pos in range(dst_pos):
+                    valid_edge_mask[node_order[src_pos]] = True
+                log_probs["valid_edge_mask"] = valid_edge_mask
                 log_probs_list.append(log_probs)
                 connections_list.append(connections)
             else:

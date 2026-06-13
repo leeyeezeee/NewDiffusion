@@ -232,14 +232,22 @@ class TaskAwareTopologyOrderNetwork(nn.Module):
 
         return torch.stack(losses).mean()
 
-    def sample_order(self, G, task_embedding=None, sampling_method="argmax"):
+    def sample_order(self, G, task_embedding=None, sampling_method="argmax", return_log_probs=False):
         assert sampling_method in ["argmax", "sample"], "sampling_method must be either 'argmax' or 'sample'"
         selected_order = []
+        log_probs = []
         for _ in range(G.x.shape[0]):
             probs = self.forward(G, selected_order=selected_order, task_embedding=task_embedding).view(-1)
             if sampling_method == "sample":
-                next_node = torch.distributions.Categorical(probs=probs).sample()
+                node_dist = torch.distributions.Categorical(probs=probs)
+                next_node = node_dist.sample()
+                if return_log_probs:
+                    log_probs.append(node_dist.log_prob(next_node))
             else:
                 next_node = torch.argmax(probs)
+                if return_log_probs:
+                    log_probs.append(torch.log(probs[next_node] + 1e-8))
             selected_order.append(int(next_node.item()))
+        if return_log_probs:
+            return selected_order, log_probs
         return selected_order

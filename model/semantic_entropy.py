@@ -13,6 +13,8 @@ from tenacity import (
     wait_random_exponential,
 )
 
+from mas.llm.price import cost_count
+
 
 T = TypeVar("T")
 
@@ -199,6 +201,8 @@ class SemanticEntailmentJudge:
             request_kwargs["extra_body"] = extra_body
         response = await self._create_completion(request_kwargs)
         verdict = response.choices[0].message.content or ""
+        prompt = "".join(message.get("content", "") for message in messages)
+        cost_count(prompt, verdict, self.llm_name)
         verdict = verdict.strip().lower()
         return verdict.startswith("entail")
 
